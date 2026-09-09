@@ -15,6 +15,27 @@
 - 已有 `tool.py`、`utils.py`、`win_utils.py` 时，只放稳定且真正复用的公共能力。不要为了统一命名新增另一套工具文件，也不要把单次业务步骤搬进去。
 - 只有业务代码较多、边界清晰，并且拆出后 `run.py` 明显更易读时，才新增业务模块。文件较长本身不是拆模块的理由。
 
+### 数据获取与业务判断分离
+
+- 数据库查询、接口查询、CSV / Excel / 文件读取等数据获取代码，默认负责“把实际结果拿回来并按其技术契约解析好”，不要顺便替当前调用方决定这个结果在业务上是否可接受。
+- 例如查询结果是 `0 / 1 / N` 条、接口返回空列表、读取结果为空，这些事实本身不等于异常；当前业务要求“必须唯一”“不能为空”“没有则跳过”时，由实际业务调用方就地判断并决定 `raise`、跳过或继续。
+- 数据获取层仍然处理自己的技术问题：SQL 执行或事务失败、HTTP / API 请求失败、响应结构不符合已确认接口契约、文件无法读取或格式损坏等，可以在该层直接抛出或自然传播异常。
+- 不要把某个具体业务的规则写进通用数据获取函数。例如同一个 ERP 映射查询，在库存补货业务中可能要求唯一命中，在报表业务中却可能允许一对多；查询函数应返回实际匹配结果，由不同业务分别解释。
+
+```python
+# database.py：只返回实际匹配结果
+def get_erp_sku_codes(platform, product_id, sku_id):
+    with sqlite3.connect(DATABASE_PATH) as conn:
+        rows = conn.execute(...).fetchall()
+    return [row[0] for row in rows]
+
+# pdd.py：当前补库存业务要求唯一命中
+spec_codes = database.get_erp_sku_codes(platform, product_id, sku_id)
+if len(spec_codes) != 1:
+    raise RuntimeError(f"ERP铺货匹配必须唯一，当前匹配到 {len(spec_codes)} 条")
+spec_code = spec_codes[0]
+```
+
 ## 3. 变量与内联
 
 - 单次使用的字面量、简单属性、简单表达式或立即调用结果直接写在使用位置。
