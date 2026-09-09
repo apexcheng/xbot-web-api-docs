@@ -20,20 +20,18 @@
 - 数据库查询、接口查询、CSV / Excel / 文件读取等数据获取代码，默认负责“把实际结果拿回来并按其技术契约解析好”，不要顺便替当前调用方决定这个结果在业务上是否可接受。
 - 例如查询结果是 `0 / 1 / N` 条、接口返回空列表、读取结果为空，这些事实本身不等于异常；当前业务要求“必须唯一”“不能为空”“没有则跳过”时，由实际业务调用方就地判断并决定 `raise`、跳过或继续。
 - 数据获取层仍然处理自己的技术问题：SQL 执行或事务失败、HTTP / API 请求失败、响应结构不符合已确认接口契约、文件无法读取或格式损坏等，可以在该层直接抛出或自然传播异常。
-- 不要把某个具体业务的规则写进通用数据获取函数。例如同一个 ERP 映射查询，在库存补货业务中可能要求唯一命中，在报表业务中却可能允许一对多；查询函数应返回实际匹配结果，由不同业务分别解释。
+- 不要把某个具体业务的规则写进通用数据获取函数。同一个查询或读取能力，在不同业务里可能分别要求唯一命中、允许多条、允许为空；数据获取函数应返回实际结果，由不同业务分别解释。
 
 ```python
-# database.py：只返回实际匹配结果
-def get_erp_sku_codes(platform, product_id, sku_id):
-    with sqlite3.connect(DATABASE_PATH) as conn:
-        rows = conn.execute(...).fetchall()
-    return [row[0] for row in rows]
+# 数据获取函数：只返回实际结果
+def query_records(query_value):
+    return data_source.query(query_value)
 
-# pdd.py：当前补库存业务要求唯一命中
-spec_codes = database.get_erp_sku_codes(platform, product_id, sku_id)
-if len(spec_codes) != 1:
-    raise RuntimeError(f"ERP铺货匹配必须唯一，当前匹配到 {len(spec_codes)} 条")
-spec_code = spec_codes[0]
+# 业务调用方：根据当前业务规则解释结果
+records = query_records(query_value)
+if len(records) != 1:
+    raise RuntimeError(f"当前业务要求唯一命中，实际匹配到 {len(records)} 条")
+record = records[0]
 ```
 
 ## 3. 变量与内联
@@ -60,15 +58,15 @@ page.find_by_xpath("//button[contains(., '下一页')]", timeout=3).click()
 - 只有逻辑明显重复，或代码较长、业务边界清晰且抽出后主流程更容易阅读时才提取函数。
 - 函数只接收实际需要的具体值；只使用字典中少数字段时，不传入整个 `dict` 再拆。
 - 稳定且不会在本次运行中被动态覆盖的项目级配置，优先由实际使用它的业务模块直接从 `config.py` 导入，不要把 `run.py` 变成配置搬运层，再把同一个固定值跨多层函数原样转发。
-- 函数参数主要承载运行时变化的数据，例如当前店铺配置、记录列表、负责人、告警数据、当前平台或用户输入。经过 `args`、对话框、数据库、接口或其他运行时来源覆盖后的配置，也属于运行时数据，应继续按业务边界传递，不能让下层重新读取 `config.py` 绕过本次输入。
-- 通用底层模块不必为了这条规则直接依赖项目 `config.py`。例如数据库函数继续接收 `db_path` 是合理的；最近的业务模块可以直接导入 `DATABASE_PATH`，再传给数据库层。这样既避免 `run.py -> 业务模块 -> 子函数` 层层搬运固定配置，又保留底层函数的通用性。
+- 函数参数主要承载运行时变化的数据，例如当前记录、当前对象、用户输入、接口结果或本轮计算结果。经过 `args`、对话框、数据库、接口或其他运行时来源覆盖后的配置，也属于运行时数据，应继续按业务边界传递，不能让下层重新读取 `config.py` 绕过本次输入。
+- 通用底层模块不必为了这条规则直接依赖项目 `config.py`。底层函数只接收自身执行实际需要的参数；最近的业务模块可以直接导入稳定项目配置，再把底层真正需要的值传进去。这样既避免 `run.py -> 业务模块 -> 子函数` 层层搬运固定配置，又保留底层函数的通用性。
 
 ```text
 判断示例：
-- `shop_config` / `records` / `manager_mobiles` / `alert_data`：运行时业务数据，继续传参。
-- `DINGTALK_WEBHOOK_URL` / `DINGTALK_WEBHOOK_SECRET` / `OPS_MOBILES`：若在本次运行中不会被覆盖，`dingtalk.py` 可直接从 `config.py` 导入，不必每个调用点重复传入。
-- `DATABASE_PATH`：`pdd.py` 等业务模块可直接从 `config.py` 导入；`database.py` 仍保持 `db_path` 参数，由业务模块传入。
-- `PLATFORM_CONFIGS` 若已经被对话框或其他运行时配置合并覆盖，合并后的结果属于运行时数据，应继续传递，不能让下层重新导入原始 `config.py` 值。
+- 当前记录、当前对象、用户输入、接口结果：运行时业务数据，按业务边界继续传参。
+- 本次运行不会变化的稳定项目配置：由实际使用它的业务模块直接从 `config.py` 导入，不通过 `run.py` 层层搬运。
+- 已被对话框、`args`、数据库或接口覆盖后的配置：已经属于运行时数据，应继续传递，不能让下层重新导入原始 `config.py` 值。
+- 通用底层函数：只接收自身执行需要的具体参数，不为了读取项目配置而直接依赖整个 `config.py`。
 ```
 - 普通影刀业务流程默认不用类。只有存在明确对象生命周期、需要长期维护实例状态，或项目已有同类结构且沿用更简单时才使用类。
 - 不新增无必要的 Service、Manager、Context、Registry、Factory、Dispatcher、Strategy 或大型配置层；不要通过换名字继续引入同类抽象。
@@ -87,15 +85,15 @@ page.find_by_xpath("//button[contains(., '下一页')]", timeout=3).click()
 
 ```text
 推荐：
-# 进入库存预警页面
+# 进入业务页面
 page.goto(url)
 page.wait_load()
 
-# 扫描当前页待处理 SKU
+# 扫描当前页待处理记录
 rows = page.find_all(...)
 
-# 计算并提交目标库存
-target_qty = ...
+# 计算并提交业务结果
+result = ...
 ...
 
 不推荐：
@@ -115,20 +113,15 @@ rows = page.find_all(...)
 
 - 该市场指令入口实际完成什么业务动作。
 - 本次传入的每个参数分别控制什么；位置参数尤其要写清参数顺序。
-- 说明只能来自对应市场指令事实页、当前安装版本源码或用户已确认用法，不根据 `process11`、`process13` 之类编号猜测。
+- 说明只能来自对应市场指令事实页、当前安装版本源码或用户已确认用法，不根据 `processN` 编号猜测。
 
 ```text
-非执行调用说明（不可直接运行）：
-# C-ERP 市场指令 process11：下载平台铺货数据；参数依次为平台类型、店铺筛选值、平台商品 ID 筛选值。
-csv_path = activity_a90a8311.process11("拼多多", "", "")
+注释格式示意（具体功能、参数名和顺序必须查对应事实页）：
+# 某市场指令 processN：说明该入口实际完成的业务动作；参数依次说明每个位置参数的业务含义。
+result = activity_xxx.processN(value_a, value_b)
 
-# C-ERP 市场指令 process13：初始化或复用 ERP 网页；username/password 为 ERP 账号密码，ERP浏览器标识指定浏览器 Profile，refresh 控制已有网页是否刷新。
-erp_web = activity_a90a8311.process13(
-    username=project_config.ERP_USERNAME,
-    password=project_config.ERP_PASSWORD,
-    ERP浏览器标识=project_config.ERP_PROFILE,
-    refresh=True,
-)
+# 使用关键字参数时，也要说明入口功能以及每个参数控制什么，不能只让读者根据参数名自行猜测。
+result = activity_xxx.processN(option_a=value_a, option_b=value_b)
 ```
 
 ## 6. 异常、收尾与日志
